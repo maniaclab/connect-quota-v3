@@ -47,9 +47,15 @@ class Report:
     def check_last_mailed(self, user: str):
         path = Path("/home/" + user + "/.quota")
         if not path.exists():
-            logging.debug("Path doesn't exist. will create.")
+            logging.debug("Path doesn't exist. Creating for the first time")
             path.touch(mode=0o600)
-        last_modified = path.stat().st_mtime
+            last_modified = 0
+        else:
+            last_modified = path.stat().st_mtime
+        owner = path.owner()
+        if not "root":
+            logging.error(f"Quota file owner is not root. Unsafe to continue")
+            return False
         now = time.time()
         week = 604800  # 1 week in seconds
         delta = now - last_modified
@@ -81,6 +87,7 @@ class Report:
                 "from": "<noreply@api.ci-connect.net>",
                 "to": to,
                 "html": body,
+                "h:Reply-To": "OSG Research Facilitation <support@opensciencegrid.org>",
             },
         )
         logging.info(f"Response code is {r.status_code}")
@@ -243,21 +250,19 @@ class Quota:
         except FileNotFoundError:
             logging.error(f"Could not find {path}/{user}")
             return
-        x = xattr.xattr(f"{path}/{user}")
-
         try:
             key = "ceph.quota.max_bytes"
-            max_bytes = int(x[key])
+            max_bytes = int(xattr.get(f"{path}/{user}", key))
 
             key = "ceph.dir.rbytes"
-            rbytes = int(x[key])
+            rbytes = int(xattr.get(f"{path}/{user}", key))
 
             key = "ceph.quota.max_files"
-            max_files = int(x[key])
+            max_files = int(xattr.get(f"{path}/{user}", key))
 
             key = "ceph.dir.rfiles"
-            rfiles = int(x[key])
-        except KeyError:
+            rfiles = int(xattr.get(f"{path}/{user}", key))
+        except OSError:
             logging.error(f"Could not find key {key}. Is this a Ceph filesystem?")
             return quota
 
