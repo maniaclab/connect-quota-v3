@@ -32,13 +32,15 @@ class Report:
 
             if self.check_last_mailed(q["user"]):
                 user = q["user"]
-                email = Path("/home/" + user + "/.forward")
-                if email.exists():
-                    self.mail(
-                        "lincolnb@uchicago.edu",  # replaceme with user's email
-                        "Your Open Science Grid account is over quota",
-                        body,
-                    )
+                forward = Path("/home/" + user + "/.forward")
+                if forward.exists():
+                    with forward.open() as f:
+                        email = f.readline()
+                        self.mail(
+                            email,
+                            "Your Open Science Grid account is over quota",
+                            body,
+                        )
                 else:
                     logging.error(
                         f"Forward file does not exist! User {user} cannot be notified!"
