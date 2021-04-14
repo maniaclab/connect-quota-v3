@@ -46,6 +46,32 @@ class Report:
                         f"Forward file does not exist! User {user} cannot be notified!"
                     )
 
+    def notify_login(self, quota: list):
+        report = self.short_report(quota)
+        user = quota[0]["user"]
+        try:
+            with open("/home/" + user + "/.quotareport.tmp", "w") as f:
+                header = "File system quota report\n"
+                f.write(header)
+                f.write(report)
+                f.write("\n")
+                f.write(self.warn_fullness(quota))
+            # write the file atomically
+            os.rename(
+                "/home/" + user + "/.quotareport.tmp",
+                "/home/" + user + "/.quotareport",
+            )
+        except OSError as e:
+            logging.error(f"Could not write quota report: {e}")
+
+    def warn_fullness(self, quota: list):
+        for q in quota:
+            if q["blocks_pct"] > 100:
+                path = q["path"]
+                return f"Quota utilization >=90% on {path} filesystem!\nPlease delete unnecessary files or contact support.\n"
+            else:
+                return "\n"
+
     def check_last_mailed(self, user: str):
         path = Path("/home/" + user + "/.quota")
         if not path.exists():
@@ -178,6 +204,8 @@ class Quota:
                     q = self.read_xfs_quota(user, path)
                 elif "ceph" in fs:
                     q = self.read_ceph_quota(user, path)
+                elif "zfs" in fs:
+                    q = self.read_zfs_quota(user, path)
                 else:
                     logging.error(f"Filesystem type {fs} is not recognized")
                 if q:
@@ -219,22 +247,7 @@ class Quota:
                 "files_hard": tokens[6],  # limit
                 "files_days": tokens[7],  # grace
             }
-            # calculate percentages if possible
-            if quota["blocks_soft"] > 0:
-                quota["blocks_pct"] = round(
-                    (quota["blocks_used"] / quota["blocks_soft"]) * 100, 2
-                )
-            else:
-                quota["blocks_pct"] = None
-
-            if quota["files_soft"] > 0:
-                quota["files_pct"] = round(
-                    (quota["files_used"] / quota["files_soft"]) * 100, 2
-                )
-            else:
-                quota["files_pct"] = None
-
-            return quota
+            return append_percentages(quota)
 
         except FileNotFoundError:
             logging.error(
@@ -244,6 +257,61 @@ class Quota:
         except ValueError as e:
             logging.warning(f"An error occured processing quota for {user}: {e}")
             return {}
+
+    def read_zfs_quota(self, user: str, path: str) -> dict:
+        # ZFS quotas are hard quotas
+        blocks_quota = self.parse_zfs_output("userquota", user, path)
+        blocks_used = self.parse_zfs_output("userused", user, path)
+        obj_used = self.parse_zfs_output("userobjused", user, path)
+        obj_quota = self.parse_zfs_output("userobjquota", user, path)
+        quota = {
+            "user": user,
+            "path": path,
+            "filesystem": "zfs",
+            "blocks_used": blocks_used,
+            "blocks_soft": blocks_quota,
+            "blocks_hard": blocks_quota,
+            "blocks_days": None,
+            "files_used": obj_used,
+            "files_soft": obj_quota,
+            "files_hard": obj_quota,
+            "files_days": None,
+        }
+        return append_percentages(quota)
+
+    def append_percentages(quota: dict) -> dict:
+        # calculate percentages if possible
+        if quota["blocks_soft"] > 0:
+            quota["blocks_pct"] = round(
+                (quota["blocks_used"] / quota["blocks_soft"]) * 100, 2
+            )
+        else:
+            quota["blocks_pct"] = None
+
+        if quota["files_soft"] > 0:
+            quota["files_pct"] = round(
+                (quota["files_used"] / quota["files_soft"]) * 100, 2
+            )
+        else:
+            quota["files_pct"] = None
+
+        return quota
+
+    def parse_zfs_output(self, subcommand: str, user: str, path: str):
+        zfsbin = "/bin/zfs"
+        userquota = subprocess.run(
+            [zfsbin, "get", "-Hp", subcommand + "@" + user, path],
+            stdout=subprocess.PIPE,
+        ).stdout
+        stripped = userquota.decode("utf-8").strip().split("\n")[-1]
+        tokens = [int(x) for x in stripped.split()]
+        # ZFS format:
+        # $ zfs get -Hp userused@<user> <path>
+        # tank/export/connect     userused@<user>  1249598850      local
+        if tokens[2] is "none":
+            return None
+        else:
+            return tokens[2]  # e.g. 1249598850
 
     def read_ceph_quota(self, user: str, path: str) -> dict:
         quota = {}
@@ -281,22 +349,7 @@ class Quota:
             "files_hard": max_files,
             "files_days": None,
         }
-        # calculate percentages if possible
-        if quota["blocks_hard"] > 0:
-            quota["blocks_pct"] = round(
-                (quota["blocks_used"] / quota["blocks_hard"]) * 100, 2
-            )
-        else:
-            quota["blocks_pct"] = None
-
-        if quota["files_hard"] > 0:
-            quota["files_pct"] = round(
-                (quota["files_used"] / quota["files_hard"]) * 100, 2
-            )
-        else:
-            quota["files_pct"] = None
-
-        return quota
+        return append_percentages(quota)
 
 
 if __name__ == "__main__":
@@ -342,6 +395,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Write an email to the user over quota",
     )
+    parser.add_argument(
+        "--notify-login",
+        action="store_true",
+        help="Write a quota file to be sourced by the user's bashrc",
+    )
     args = parser.parse_args()
 
     if args.path is None:
@@ -378,7 +436,10 @@ if __name__ == "__main__":
     quota = []
     try:
         for u in user:
-            quota.extend(q.read_all_quotas(u, args.path))
+            user_all_quotas = q.read_all_quotas(u, args.path)
+            quota.extend(user_all_quotas)
+            if args.notify_login is True:
+                r.notify_login(user_all_quotas)
     except:
         raise
         sys.exit(1)
@@ -419,6 +480,5 @@ if __name__ == "__main__":
         logging.info(f"Response code is {r.status_code}")
     elif args.notify_users is True:
         r.notify_users(quota)
-
-    else:
+    elif args.notify_login is not True:
         print(results)
