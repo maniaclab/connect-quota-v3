@@ -26,6 +26,7 @@ setuptools.setup(
     install_requires=[
         'python36-xattr',
         'python36-requests',
+        'python36-tabulate',
     ],
     classifiers=[
         'Programming Language :: Python :: 3',
