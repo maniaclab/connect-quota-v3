@@ -14,6 +14,12 @@ Install dependencies via pip (`requirements.txt`), or via yum (tested on EL7):
 ```bash
 yum install python36-xattr python36-requests python36-tabulate
 ```
+
+Build RPM
+```bash
+python3 setup.py bdist_rpm
+```
+
 # Contributing
 Please install and run the 'black' formatter:
 ```bash
