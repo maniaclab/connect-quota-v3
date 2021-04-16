@@ -47,10 +47,11 @@ class Report:
                     )
 
     def notify_login(self, quota: list):
-        report = self.short_report(quota)
+        report = self.login_report(quota, tablefmt="fancy_grid")
         user = quota[0]["user"]
+        path = quota[0]["path"]
         try:
-            with open("/home/" + user + "/.quotareport.tmp", "w") as f:
+            with open("/" + path + "/" + user + "/.quotareport.tmp", "w") as f:
                 header = "File system quota report\n"
                 f.write(header)
                 f.write(report)
@@ -58,18 +59,23 @@ class Report:
                 f.write(self.warn_fullness(quota))
             # write the file atomically
             os.rename(
-                "/home/" + user + "/.quotareport.tmp",
-                "/home/" + user + "/.quotareport",
+                "/" + path + "/" + user + "/.quotareport.tmp",
+                "/" + path + "/" + user + "/.quotareport",
             )
         except OSError as e:
             logging.error(f"Could not write quota report: {e}")
 
     def warn_fullness(self, quota: list):
         for q in quota:
-            if q["blocks_pct"] > 100:
-                path = q["path"]
-                return f"Quota utilization >=90% on {path} filesystem!\nPlease delete unnecessary files or contact support.\n"
-            else:
+            try:
+                if q["blocks_pct"] > 100:
+                    path = q["path"]
+                    return f"Quota utilization >=90% on {path} filesystem!\nPlease delete unnecessary files or contact support.\n"
+                else:
+                    return "\n"
+            except TypeError as e:
+                user = q["user"]
+                logging.error(f"User {user} does not appear to have a quota!")
                 return "\n"
 
     def check_last_mailed(self, user: str):
@@ -147,8 +153,22 @@ class Report:
         for key in quota:
             if key in convert_to_gb:
                 v = quota[key]
-                quota[key] = round(v / 1024 ** 3, 2)
+                try:
+                    quota[key] = round(v / 1024 ** 3, 2)
+                except TypeError as e:
+                    logging.warning(f"Cannot do unit conversion due to error: {e}")
         return quota
+
+    def login_report(self, quotas: list, tablefmt="simple") -> str:
+        headers = {
+            "user": "User",
+            "blocks_pct": "Quota Used (%)",
+            "blocks_used": "Blocks Used (GB)",
+            "blocks_soft": "Blocks Quota (GB)",
+            "files_used": "Total Files (#)",
+        }
+        report_quotas = self.filter_keys(quotas, headers.keys())
+        return tabulate(report_quotas, headers=headers, tablefmt=tablefmt)
 
     def short_report(self, quotas: list, tablefmt="simple") -> str:
         headers = {
@@ -247,7 +267,7 @@ class Quota:
                 "files_hard": tokens[6],  # limit
                 "files_days": tokens[7],  # grace
             }
-            return append_percentages(quota)
+            return self.append_percentages(quota)
 
         except FileNotFoundError:
             logging.error(
@@ -264,6 +284,11 @@ class Quota:
         blocks_used = self.parse_zfs_output("userused", user, path)
         obj_used = self.parse_zfs_output("userobjused", user, path)
         obj_quota = self.parse_zfs_output("userobjquota", user, path)
+        # POSIX requires that the username start with a letter. if we get a
+        # username that starts with a number, presume it is a UID. Try our best
+        # to determine the username.
+        if user[0].isdigit():
+            user = self.uid_lookup(user, path)
         quota = {
             "user": user,
             "path": path,
@@ -277,41 +302,73 @@ class Quota:
             "files_hard": obj_quota,
             "files_days": None,
         }
-        return append_percentages(quota)
+        return self.append_percentages(quota)
 
-    def append_percentages(quota: dict) -> dict:
-        # calculate percentages if possible
-        if quota["blocks_soft"] > 0:
-            quota["blocks_pct"] = round(
-                (quota["blocks_used"] / quota["blocks_soft"]) * 100, 2
-            )
+    def uid_lookup(self, uid: str, path: str) -> str:
+        # from the path we can try to determine a username with a simple
+        # heuristic that assumes a subdirectory in $path is owned by $uid is
+        # the name of the user
+        # this also means that the lookup time is dependent on the number of
+        # users in the system..
+        names = [
+            f
+            for f in os.listdir("/" + path)
+            if self.isowner(uid, os.path.join("/" + path, f))
+        ]
+        return names[0]
+
+    def isowner(self, uid, path):
+        if os.stat(path).st_uid == int(uid):
+            return True
         else:
+            return False
+
+    def append_percentages(self, quota: dict) -> dict:
+        try:
+            if quota["blocks_soft"] > 0:
+                quota["blocks_pct"] = round(
+                    (quota["blocks_used"] / quota["blocks_soft"]) * 100, 2
+                )
+            else:
+                quota["blocks_pct"] = None
+        except TypeError as e:
+            logging.warning(f"Couldn't calculate block utilization due to error: {e}")
             quota["blocks_pct"] = None
-
-        if quota["files_soft"] > 0:
-            quota["files_pct"] = round(
-                (quota["files_used"] / quota["files_soft"]) * 100, 2
-            )
-        else:
+        try:
+            if quota["files_soft"] > 0:
+                quota["files_pct"] = round(
+                    (quota["files_used"] / quota["files_soft"]) * 100, 2
+                )
+            else:
+                quota["file_pct"] = (None,)
+        except TypeError as e:
+            logging.warning(f"Couldn't calculate file utilization due to error: {e}")
             quota["files_pct"] = None
-
         return quota
 
-    def parse_zfs_output(self, subcommand: str, user: str, path: str):
-        zfsbin = "/bin/zfs"
-        userquota = subprocess.run(
-            [zfsbin, "get", "-Hp", subcommand + "@" + user, path],
-            stdout=subprocess.PIPE,
-        ).stdout
-        stripped = userquota.decode("utf-8").strip().split("\n")[-1]
-        tokens = [int(x) for x in stripped.split()]
-        # ZFS format:
-        # $ zfs get -Hp userused@<user> <path>
-        # tank/export/connect     userused@<user>  1249598850      local
-        if tokens[2] is "none":
+    def parse_zfs_output(self, subcommand: str, user: str, path: str) -> int:
+        try:
+            userquota = subprocess.run(
+                [
+                    "/usr/sbin/zfs",
+                    "get",
+                    "-Hp",
+                    "-o",
+                    "value",
+                    subcommand + "@" + user,
+                    path,
+                ],
+                stdout=subprocess.PIPE,
+                check=True,
+            ).stdout
+            value = userquota.decode("utf-8").strip()
+            if value is "none":
+                return None
+            else:
+                return int(value)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"ZFS exited non-cleanly: {e}")
             return None
-        else:
-            return tokens[2]  # e.g. 1249598850
 
     def read_ceph_quota(self, user: str, path: str) -> dict:
         quota = {}
@@ -349,7 +406,7 @@ class Quota:
             "files_hard": max_files,
             "files_days": None,
         }
-        return append_percentages(quota)
+        return self.append_percentages(quota)
 
 
 if __name__ == "__main__":
@@ -452,6 +509,8 @@ if __name__ == "__main__":
 
     if args.report == "full":
         results = r.full_report(quota, args.fmt)
+    elif args.report == "login":
+        results = r.login_report(quota, args.fmt)
     else:
         results = r.short_report(quota, args.fmt)
 
