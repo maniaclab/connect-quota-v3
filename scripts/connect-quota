@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import subprocess
 import os
@@ -161,7 +161,7 @@ class Report:
 
     def login_report(self, quotas: list, tablefmt="simple") -> str:
         headers = {
-            "user": "User",
+            "path": "Path",
             "blocks_pct": "Quota Used (%)",
             "blocks_used": "Blocks Used (GB)",
             "blocks_soft": "Blocks Quota (GB)",
@@ -291,7 +291,10 @@ class Quota:
             user = self.uid_lookup(user, path)
         quota = {
             "user": user,
-            "path": path,
+            "path": "/"
+            + path.split("/")[
+                -1
+            ],  # we want to report the mounted FS name, not the ZFS filesystem name
             "filesystem": "zfs",
             "blocks_used": blocks_used,
             "blocks_soft": blocks_quota,
