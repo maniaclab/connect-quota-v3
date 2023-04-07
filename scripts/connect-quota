@@ -10,6 +10,7 @@ import argparse
 import logging
 import xattr
 import time
+from typing import Optional
 from tabulate import tabulate
 from pathlib import Path
 
@@ -161,11 +162,11 @@ class Report:
 
     def login_report(self, quotas: list, tablefmt="simple") -> str:
         headers = {
-            "path": "Path",
-            "blocks_pct": "Quota Used (%)",
-            "blocks_used": "Blocks Used (GB)",
-            "blocks_soft": "Blocks Quota (GB)",
-            "files_used": "Total Files (#)",
+            "storage": "Storage Area",
+            "blocks_used": "Usage (GB)",
+            "blocks_hard": "Limit (GB)",
+            "files_used": "Files (#)",
+            "blocks_pct": "Quota (%)",
         }
         report_quotas = self.filter_keys(quotas, headers.keys())
         return tabulate(report_quotas, headers=headers, tablefmt=tablefmt)
@@ -211,7 +212,21 @@ class Quota:
                 users.append(item.pw_name)
         return users
 
-    def read_all_quotas(self, user: str, paths: list) -> list:
+    #def resolve_user(self, user: str) -> dict:
+    #    posix_name = "[a-z_][a-z0-9_-]*[$]?"
+    #    # First try to match on username. If that fails, use UID
+    #    if posix_name.match(user):
+    #        # We have a username, try to get a uid.
+    #        try:
+    #            uid = pwd.getpwnam(user)
+    #            return (name, uid)
+    #    else:
+    #        # Assume we have a UID
+            
+			
+		
+
+    def read_all_quotas(self, paths: list, user: str, uid: Optional[int] = None) -> list:
         quotas = []
         try:
             for p in paths:
@@ -219,13 +234,17 @@ class Quota:
                 s = p.split(":")
                 path = s[0]
                 fs = s[1]
+                try: 
+                    alias = s[2]
+                except IndexError:
+                    alias = path
                 q = {}  # initialization in case there's an error
                 if "xfs" in fs:
-                    q = self.read_xfs_quota(user, path)
+                    q = self.read_xfs_quota(user, uid, path, alias)
                 elif "ceph" in fs:
-                    q = self.read_ceph_quota(user, path)
+                    q = self.read_ceph_quota(user, uid, path, alias)
                 elif "zfs" in fs:
-                    q = self.read_zfs_quota(user, path)
+                    q = self.read_zfs_quota(user, uid, path, alias)
                 else:
                     logging.error(f"Filesystem type {fs} is not recognized")
                 if q:
@@ -237,7 +256,7 @@ class Quota:
             raise IndexError
         return quotas
 
-    def read_xfs_quota(self, user: str, path: str) -> dict:
+    def read_xfs_quota(self, user: str, uid: Optional[int], path: str, alias: str) -> dict:
         quota = {}
         try:
             quotabin = "/bin/quota"
@@ -257,6 +276,7 @@ class Quota:
             quota = {
                 "user": user,
                 "path": path,
+                "alias": alias,
                 "filesystem": "xfs",
                 "blocks_used": tokens[0] * 1024,  # blocks
                 "blocks_soft": tokens[1] * 1024,  # quota
@@ -278,23 +298,29 @@ class Quota:
             logging.warning(f"An error occured processing quota for {user}: {e}")
             return {}
 
-    def read_zfs_quota(self, user: str, path: str) -> dict:
-        # ZFS quotas are hard quotas
-        blocks_quota = self.parse_zfs_output("userquota", user, path)
-        blocks_used = self.parse_zfs_output("userused", user, path)
-        obj_used = self.parse_zfs_output("userobjused", user, path)
-        obj_quota = self.parse_zfs_output("userobjquota", user, path)
+    def read_zfs_quota(self, user: str, uid: Optional[int], path: str, alias: str) -> dict:
+        # If a UID is given, we use it to do the lookup
+        if uid is not None:
+            # HACKY
+            blocks_quota = self.parse_zfs_output("userquota", uid, path)
+            blocks_used = self.parse_zfs_output("userused", uid, path)
+            obj_used = self.parse_zfs_output("userobjused", uid, path)
+            obj_quota = self.parse_zfs_output("userobjquota", uid, path)
+        else:
+            blocks_quota = self.parse_zfs_output("userquota", user, path)
+            blocks_used = self.parse_zfs_output("userused", user, path)
+            obj_used = self.parse_zfs_output("userobjused", user, path)
+            obj_quota = self.parse_zfs_output("userobjquota", user, path)
         # POSIX requires that the username start with a letter. if we get a
         # username that starts with a number, presume it is a UID. Try our best
         # to determine the username.
         if user[0].isdigit():
             user = self.uid_lookup(user, path)
+        # All ZFS quotas are hard quotas
         quota = {
             "user": user,
-            "path": "/"
-            + path.split("/")[
-                -1
-            ],  # we want to report the mounted FS name, not the ZFS filesystem name
+            "path": path,
+            "storage": alias,
             "filesystem": "zfs",
             "blocks_used": blocks_used,
             "blocks_soft": blocks_quota,
@@ -373,7 +399,7 @@ class Quota:
             logging.error(f"ZFS exited non-cleanly: {e}")
             return None
 
-    def read_ceph_quota(self, user: str, path: str) -> dict:
+    def read_ceph_quota(self, user: str, uid: Optional[int], path: str, alias: str) -> dict:
         quota = {}
         try:
             os.stat(path + "/" + user)
@@ -399,6 +425,7 @@ class Quota:
         quota = {
             "user": user,
             "path": path,
+            "storage": alias,
             "filesystem": "ceph",
             "blocks_used": rbytes,
             "blocks_soft": max_bytes,
@@ -496,7 +523,14 @@ if __name__ == "__main__":
     quota = []
     try:
         for u in user:
-            user_all_quotas = q.read_all_quotas(u, args.path)
+            # Check if we have a UID as well
+            try: 
+                userinfo = u.split(":")
+                username = userinfo[0]
+                uid = userinfo[1]
+                user_all_quotas = q.read_all_quotas(args.path, username, uid)
+            except IndexError:
+                user_all_quotas = q.read_all_quotas(args.path, u)
             quota.extend(user_all_quotas)
             if args.notify_login is True:
                 r.notify_login(user_all_quotas)
