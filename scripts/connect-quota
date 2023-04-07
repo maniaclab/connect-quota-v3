@@ -402,22 +402,22 @@ class Quota:
     def read_ceph_quota(self, user: str, uid: Optional[int], path: str, alias: str) -> dict:
         quota = {}
         try:
-            os.stat(path + "/" + user)
+            os.stat(path)
         except FileNotFoundError:
-            logging.error(f"Could not find {path}/{user}")
+            logging.error(f"Could not find {path}")
             return
         try:
             key = "ceph.quota.max_bytes"
-            max_bytes = int(xattr.get(f"{path}/{user}", key))
+            max_bytes = int(xattr.get(f"{path}", key))
 
             key = "ceph.dir.rbytes"
-            rbytes = int(xattr.get(f"{path}/{user}", key))
+            rbytes = int(xattr.get(f"{path}", key))
 
             key = "ceph.quota.max_files"
-            max_files = int(xattr.get(f"{path}/{user}", key))
+            max_files = int(xattr.get(f"{path}", key))
 
             key = "ceph.dir.rfiles"
-            rfiles = int(xattr.get(f"{path}/{user}", key))
+            rfiles = int(xattr.get(f"{path}", key))
         except OSError:
             logging.error(f"Could not find key {key}. Is this a Ceph filesystem?")
             return quota
