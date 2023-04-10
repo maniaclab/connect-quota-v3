@@ -48,7 +48,7 @@ class Report:
                     )
 
     def notify_login(self, quota: list):
-        report = self.login_report(quota, tablefmt="fancy_grid")
+        report = self.login_report(quota, tablefmt="simple")
         user = quota[0]["user"]
         path = quota[0]["path"]
         try:
@@ -162,14 +162,14 @@ class Report:
 
     def login_report(self, quotas: list, tablefmt="simple") -> str:
         headers = {
-            "storage": "Storage Area",
-            "blocks_used": "Usage (GB)",
+            "storage": "Storage",
+            "blocks_used": "Used (GB)",
             "blocks_hard": "Limit (GB)",
             "files_used": "Files (#)",
             "blocks_pct": "Quota (%)",
         }
         report_quotas = self.filter_keys(quotas, headers.keys())
-        return tabulate(report_quotas, headers=headers, tablefmt=tablefmt)
+        return tabulate(report_quotas, headers=headers, tablefmt=tablefmt, numalign="right")
 
     def short_report(self, quotas: list, tablefmt="simple") -> str:
         headers = {
