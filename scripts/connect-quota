@@ -47,21 +47,23 @@ class Report:
                         f"Forward file does not exist! User {user} cannot be notified!"
                     )
 
-    def notify_login(self, quota: list):
-        report = self.login_report(quota, tablefmt="simple")
+    def notify_login(self, quota: list, header: bool=True, report_dir: str="/home", report_file: str=".quotareport"):
+        report = self.login_report(quota, header=header, tablefmt="simple")
         user = quota[0]["user"]
-        path = quota[0]["path"]
         try:
-            with open("/" + path + "/" + user + "/.quotareport.tmp", "w") as f:
-                header = "File system quota report\n"
-                f.write(header)
+            tmppath = report_dir + "/" + user + "/" + report_file + ".tmp"
+            finalpath = report_dir + "/" + user + "/" + report_file 
+            with open(tmppath, "w") as f:
+                if header:
+                    header_text = "Filesystem quota report\n"
+                    f.write(header_text)
                 f.write(report)
                 f.write("\n")
                 f.write(self.warn_fullness(quota))
             # write the file atomically
             os.rename(
-                "/" + path + "/" + user + "/.quotareport.tmp",
-                "/" + path + "/" + user + "/.quotareport",
+                tmppath,
+                finalpath
             )
         except OSError as e:
             logging.error(f"Could not write quota report: {e}")
@@ -160,7 +162,7 @@ class Report:
                     logging.warning(f"Cannot do unit conversion due to error: {e}")
         return quota
 
-    def login_report(self, quotas: list, tablefmt="simple") -> str:
+    def login_report(self, quotas: list, header: bool=True, tablefmt="simple") -> str:
         headers = {
             "storage": "Storage",
             "blocks_used": "Used (GB)",
@@ -169,7 +171,10 @@ class Report:
             "blocks_pct": "Quota (%)",
         }
         report_quotas = self.filter_keys(quotas, headers.keys())
-        return tabulate(report_quotas, headers=headers, tablefmt=tablefmt, numalign="right")
+        if header:
+            return tabulate(report_quotas, headers=headers, tablefmt=tablefmt, numalign="right")
+        else:
+            return tabulate(report_quotas, tablefmt=tablefmt, numalign="right")
 
     def short_report(self, quotas: list, tablefmt="simple") -> str:
         headers = {
@@ -487,6 +492,21 @@ if __name__ == "__main__":
         action="store_true",
         help="Write a quota file to be sourced by the user's bashrc",
     )
+    parser.add_argument(
+        "--no-header",
+        action="store_true",
+        help="Do not write a header (only for login reporting)",
+    )
+    parser.add_argument(
+        "--report-file",
+        default=".quotareport",
+        help="Filename for login notifications (only for login reporting)",
+    )
+    parser.add_argument(
+        "--report-dir",
+        default="$HOME",
+        help="Path to the report directory (only for login reporting)"
+    )
     args = parser.parse_args()
 
     if args.path is None:
@@ -533,7 +553,11 @@ if __name__ == "__main__":
                 user_all_quotas = q.read_all_quotas(args.path, u)
             quota.extend(user_all_quotas)
             if args.notify_login is True:
-                r.notify_login(user_all_quotas)
+                r.notify_login(user_all_quotas,
+                               header=(not args.no_header),
+                               report_dir=args.report_dir,
+                               report_file=args.report_file
+                              )
     except:
         raise
         sys.exit(1)
