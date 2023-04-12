@@ -72,7 +72,10 @@ class Report:
         for q in quota:
             try:
                 if q["blocks_pct"] > 100:
-                    path = q["path"]
+                    if "alias" in q:
+                        path = q["alias"]
+                    else: 
+                        path = q["path"]
                     return f"Quota utilization >=90% on {path} filesystem!\nPlease delete unnecessary files or contact support.\n"
                 else:
                     return "\n"
