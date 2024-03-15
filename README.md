@@ -14,6 +14,7 @@ Install dependencies via pip (`requirements.txt`), or via yum (tested on EL7):
 ```bash
 yum install python36-xattr python36-requests python36-tabulate
 ```
+Note that the python3-devel package and the group 'Development Tools' should also be installed to install the packages via pip.
 
 Build RPM
 ```bash
