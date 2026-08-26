@@ -399,7 +399,7 @@ class Quota:
                 check=True,
             ).stdout
             value = userquota.decode("utf-8").strip()
-            if value is "none":
+            if value == "none":
                 return None
             else:
                 return int(value)
@@ -538,7 +538,7 @@ if __name__ == "__main__":
 
     # this is merely informative - the user would get permission denied
     # if they try to run /bin/quota themselves.
-    if os.geteuid() is not 0:
+    if os.geteuid() != 0:
         if args.user is not None:
             logging.error("Only root can get quotas for another user")
             sys.exit(1)
